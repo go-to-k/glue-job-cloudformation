@@ -1,0 +1,348 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: glue cfn
+
+Metadata:
+  "AWS::CloudFormation::Interface":
+    ParameterGroups:
+      - Label:
+          default: "AppName"
+        Parameters:
+          - AppName
+      - Label:
+          default: "ConnectionName"
+        Parameters:
+          - ConnectionName
+      - Label:
+          default: "JDBCString"
+        Parameters:
+          - JDBCString
+      - Label:
+          default: "Secret"
+        Parameters:
+          - Secret
+      - Label:
+          default: "GlueScriptsBucket"
+        Parameters:
+          - GlueScriptsBucket
+      - Label:
+          default: "GlueResultsBucket"
+        Parameters:
+          - GlueResultsBucket
+      - Label:
+          default: "GlueTempBucket"
+        Parameters:
+          - GlueTempBucket
+      - Label:
+          default: "GlueScriptsFilename"
+        Parameters:
+          - GlueScriptsFilename
+      - Label:
+          default: "GlueSecurityGroupVpcID"
+        Parameters:
+          - GlueSecurityGroupVpcID
+      - Label:
+          default: "GlueConnectionSubnetID"
+        Parameters:
+          - GlueConnectionSubnetID
+      - Label:
+          default: "GlueConnectionSubnetAZName"
+        Parameters:
+          - GlueConnectionSubnetAZName
+      - Label:
+          default: "SnsTopicArn"
+        Parameters:
+          - SnsTopicArn
+      - Label:
+          default: "SnsTopicName"
+        Parameters:
+          - SnsTopicName
+
+# ------------------------------------------------------------#
+# Input Parameters
+# ------------------------------------------------------------#
+Parameters:
+  AppName:
+    Type: String
+    Default: ""
+
+  GlueServiceRolePolicyARN:
+    Type: String
+    Default: "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+
+  AmazonS3FullAccessPolicyARN:
+    Type: String
+    Default: "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+
+  ConnectionName:
+    Type: String
+    #Default: ""
+
+  JDBCString:
+    Type: String
+    #Default: ""
+
+  Secret:
+    Type: String
+    #Default: ""
+
+  GlueScriptsBucket:
+    Type: String
+    #Default: ""
+
+  GlueResultsBucket:
+    Type: String
+    #Default: ""
+
+  GlueTempBucket:
+    Type: String
+    #Default: ""
+
+  GlueScriptsFilename:
+    Type: String
+    #Default: ""
+
+  GlueSecurityGroupVpcID:
+    Type: String
+    #Default: ""
+
+  GlueConnectionSubnetID:
+    Type: String
+    #Default: ""
+
+  GlueConnectionSubnetAZName:
+    Type: String
+    #Default: ""
+
+  SnsTopicArn:
+    Type: String
+    #Default: ""
+
+  SnsTopicName:
+    Type: String
+    #Default: ""
+
+# ------------------------------------------------------------#
+#  Resources
+# ------------------------------------------------------------#
+Resources:
+  GlueRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub "${AppName}-GlueServiceRole"
+      Description: "for Glue"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - "glue.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - !Ref GlueServiceRolePolicyARN
+        - !Ref AmazonS3FullAccessPolicyARN
+
+  GluePolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: !Sub "${AppName}-GluePolicy"
+      Roles:
+        - !Ref GlueRole
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - "logs:AssociateKmsKey"
+            Resource: "arn:aws:logs:*:*:*"
+
+  GlueScriptsS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref GlueScriptsBucket
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  GlueResultsS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref GlueResultsBucket
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  GlueTempS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref GlueTempBucket
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  GlueSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      VpcId: !Ref GlueSecurityGroupVpcID
+      GroupName: !Sub "${AppName}-Glue-sg"
+      GroupDescription: "Glue Sg"
+      Tags:
+        - Key: "Name"
+          Value: !Sub "Glue-sg"
+
+  SelfRefSecurityGroupIgress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt GlueSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId: !GetAtt GlueSecurityGroup.GroupId
+
+  GlueConnection:
+    Type: AWS::Glue::Connection
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      ConnectionInput: 
+        Description: "Connect to MySQL database."
+        ConnectionType: "JDBC"
+        PhysicalConnectionRequirements:
+          SecurityGroupIdList: 
+            - !Ref GlueSecurityGroup
+          SubnetId: !Ref GlueConnectionSubnetID
+          AvailabilityZone: !Ref GlueConnectionSubnetAZName
+        ConnectionProperties: {
+          "JDBC_CONNECTION_URL": !Ref JDBCString,
+          "USERNAME": !Sub '{{resolve:secretsmanager:${Secret}:SecretString:username}}',
+          "PASSWORD": !Sub '{{resolve:secretsmanager:${Secret}:SecretString:password}}'
+        }
+        Name: !Sub "${ConnectionName}"
+
+  GlueJob:
+    Type: AWS::Glue::Job
+    DependsOn:
+      - GlueScriptsS3Bucket
+      - GlueResultsS3Bucket
+      - GlueTempS3Bucket
+    Properties:
+      Name: !Sub "${AppName}-job"
+      Connections:
+        Connections:
+          - !Sub "${ConnectionName}"
+      Role: !Ref GlueRole
+      GlueVersion: "2.0"
+      Command:
+        Name: "glueetl"
+        PythonVersion: "3"
+        ScriptLocation: !Sub "s3://${GlueScriptsBucket}/${GlueScriptsFilename}"
+      DefaultArguments:
+        --JOB_NAME: !Sub "${AppName}-job"
+        --connection_name: !Sub "${ConnectionName}"
+        --bucket_root: !Sub "s3://${GlueResultsBucket}"
+        --TempDir: !Sub "s3://${GlueTempBucket}"
+        --enable-metrics: ""
+        --enable-continuous-cloudwatch-log: "true"
+        --enable-continuous-log-filter: "true"
+        --continuous-log-logGroup: !Sub "/aws-glue/jobs/${AppName}"
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      WorkerType: "G.1X"
+      NumberOfWorkers: 10
+      MaxRetries: 1
+      Timeout: 2880
+      SecurityConfiguration: !Sub "${AppName}-security-config"
+      Tags:
+        Key: Name
+        Value: !Sub "${AppName}-job"
+
+  GlueJobTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: !Sub "${AppName}-trigger"
+      Schedule: cron(0 16 * * ? *)
+      Type: SCHEDULED
+      Actions:
+        - JobName: !Ref GlueJob
+      StartOnCreation: true
+
+  GlueJobFailureEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.glue
+        detail-type:
+          - Glue Job State Change
+        detail:
+          state:
+            - FAILED
+          jobName:
+            - !Ref GlueJob
+      State: ENABLED
+      Targets:
+        - Arn: !Ref SnsTopicArn
+          Id: !Ref SnsTopicName
+
+  GlueLogsEncryptionKey:
+    DeletionPolicy: Retain
+    Type: AWS::KMS::Key
+    Properties:
+      Description: "CMK for Glue Job Logs Encryprioin etc"
+      EnableKeyRotation: true
+      Tags:
+        - Key: "Name"
+          Value: !Sub "GlueLogs-${AppName}-key"
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: !Sub "GlueLogs-${AppName}-key"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              AWS: !Join
+                - ""
+                - - "arn:aws:iam::"
+                  - !Ref "AWS::AccountId"
+                  - ":root"
+            Action: "kms:*"
+            Resource: "*"
+          - Effect: "Allow"
+            Principal:
+              Service: !Sub "logs.${AWS::Region}.amazonaws.com"
+              AWS: !GetAtt GlueRole.Arn
+            Action:
+              - "kms:Encrypt*"
+              - "kms:Decrypt*"
+              - "kms:ReEncrypt*"
+              - "kms:GenerateDataKey*"
+              - "kms:Describe*"
+            Resource: "*"
+
+  GlueLogsEncryptionKeyAlias:
+    Type: "AWS::KMS::Alias"
+    Properties:
+      AliasName: !Sub "alias/GlueLogs-${AppName}-key"
+      TargetKeyId: !Ref GlueLogsEncryptionKey
+
+  #### Internal Failureになってエラーになるので、CFn実行後にCLIで作成
+  #GlueJobSecurityConfiguration:
+  #  Type: AWS::Glue::SecurityConfiguration
+  #  Properties:
+  #    Name: !Sub "${AppName}-security-config"
+  #    EncryptionConfiguration:
+  #      CloudWatchEncryption:
+  #        #CloudWatchEncryptionMode: "SSE-KMS"
+  #        KmsKeyArn: !GetAtt GlueLogsEncryptionKey.Arn
+
+# ------------------------------------------------------------#
+# Output Parameters
+# ------------------------------------------------------------#
+Outputs:
+  GlueLogsEncryptionKeyArn:
+    Value: !GetAtt GlueLogsEncryptionKey.Arn
+    Export:
+      Name: !Sub "GlueLogsEncryptionKey-ARN"
